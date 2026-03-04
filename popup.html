@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { font-family: sans-serif; padding: 15px; width: 250px; color: #333; }
+    h4 { margin: 0 0 10px 0; font-size: 15px; }
+    input[type="password"] { width: 100%; padding: 8px; box-sizing: border-box; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 4px; }
+    button { width: 100%; padding: 8px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    button:hover { background: #0056b3; }
+    #status { font-size: 12px; color: green; text-align: center; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h4>DeepSeek API 设置</h4>
+  <p style="font-size: 12px; color: #666; margin-top:0;">在网页中通过悬浮球控制翻译</p>
+  <input type="password" id="apiKey" placeholder="输入 sk-... 开头的 Key">
+  <button id="saveBtn">保存 API Key</button>
+  <div id="status"></div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const apiKeyInput = document.getElementById('apiKey');
+      chrome.storage.local.get(['deepseekApiKey'], (result) => {
+        if (result.deepseekApiKey) apiKeyInput.value = result.deepseekApiKey;
+      });
+      document.getElementById('saveBtn').addEventListener('click', () => {
+        chrome.storage.local.set({ deepseekApiKey: apiKeyInput.value.trim() }, () => {
+          document.getElementById('status').textContent = '保存成功，刷新网页生效！';
+          setTimeout(() => { document.getElementById('status').textContent = ''; }, 2000);
+        });
+      });
+    });
+  </script>
+</body>
+</html>

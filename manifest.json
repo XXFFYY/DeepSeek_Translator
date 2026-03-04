@@ -1,0 +1,40 @@
+{
+    "manifest_version": 3,
+    "name": "DeepSeek 沉浸式双语翻译 Pro",
+    "version": "5.0",
+    "description": "支持悬浮球全页双语翻译、自动翻译开关、本地缓存加速及 Alt 键悬停翻译。",
+    "icons": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    },
+    "permissions": [
+      "storage",
+      "contextMenus"
+    ],
+    "host_permissions": [
+      "https://api.deepseek.com/*"
+    ],
+    "background": {
+      "service_worker": "background.js"
+    },
+    "content_scripts": [
+      {
+        "matches": ["<all_urls>"],
+        "js": ["content.js"]
+      }
+    ],
+    "action": {
+      "default_popup": "popup.html",
+      "default_icon": "icon.png"
+    },
+    "commands": {
+      "trigger_translate": {
+        "suggested_key": {
+          "default": "Alt+T",
+          "mac": "Alt+T"
+        },
+        "description": "一键翻译全页"
+      }
+    }
+  }
