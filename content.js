@@ -4,6 +4,7 @@ let autoTranslateEnabled = false;
 let isPageTranslated = false; // [新增] 记录页面是否处于已翻译状态
 let isManualRestored = false; // [新增] 记录用户是否手动撤回了翻译
 let abortCurrentTranslation = false; // [新增] 随时中止翻译的信号
+let successTimer = null;
 
 // ================= 1. 右键消息监听器 (修复核心) =================
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -21,6 +22,54 @@ let currentMode = 'normal';
 
 const gameDomains = ['nexusmods.com', 'steampowered.com', 'epicgames.com', 'ign.com', 'fandom.com', 'curseforge.com'];
 const academicDomains = ['github.com', 'arxiv.org', 'stackoverflow.com', 'nature.com', 'ieee.org', 'sciencedirect.com'];
+
+function analyzeTextLang(text) {
+  const clean = (text || '')
+    .replace(/\s+/g, ' ')
+    .replace(/[0-9]/g, '')
+    .trim();
+
+  if (!clean || clean.length < 2) {
+    return { shouldTranslate: false, reason: 'too_short' };
+  }
+
+  const chineseMatches = clean.match(/[\u4e00-\u9fff]/g) || [];
+  const latinMatches = clean.match(/[A-Za-z]/g) || [];
+  const japaneseKanaMatches = clean.match(/[\u3040-\u30ff]/g) || [];
+  const koreanMatches = clean.match(/[\uac00-\ud7af]/g) || [];
+
+  const zhCount = chineseMatches.length;
+  const enCount = latinMatches.length;
+  const jpCount = japaneseKanaMatches.length;
+  const koCount = koreanMatches.length;
+
+  const letterLikeCount = zhCount + enCount + jpCount + koCount;
+
+  if (letterLikeCount === 0) {
+    return { shouldTranslate: false, reason: 'no_letters' };
+  }
+
+  const zhRatio = zhCount / letterLikeCount;
+  const nonZhForeignCount = enCount + jpCount + koCount;
+
+  // 规则：
+  // 1) 中文占比很高，不翻
+  // 2) 外文字符太少，不翻
+  // 3) 纯短标签/按钮尽量跳过
+  if (zhRatio >= 0.45) {
+    return { shouldTranslate: false, reason: 'mostly_chinese' };
+  }
+
+  if (nonZhForeignCount < 3) {
+    return { shouldTranslate: false, reason: 'too_little_foreign_text' };
+  }
+
+  return { shouldTranslate: true, reason: 'foreign_text' };
+}
+
+function shouldTranslateText(text) {
+  return analyzeTextLang(text).shouldTranslate;
+}
 
 function getCacheKey(text) { return currentMode + "|||" + text; }
 
@@ -133,37 +182,47 @@ function showToast(msg, isError = false) {
   setTimeout(() => { toast.style.top = '-50px'; setTimeout(() => toast.remove(), 400); }, 3000);
 }
 
-// [修改] 增加 isSilent 参数控制，且修复颜色卡死问题
 function showSuccessFab(force = false, isSilent = false) {
   if (!force && isTranslating === false) return;
-  if (abortCurrentTranslation) return; 
+  if (abortCurrentTranslation) return;
 
-  // [关键修复] 必须先清空橙色的内联背景，否则 CSS 里的绿色渐变出不来
+  if (successTimer) {
+    clearTimeout(successTimer);
+    successTimer = null;
+  }
+
   fab.style.background = '';
   fab.classList.add('is-complete');
   fab.innerHTML = iconSuccess;
-  
-  // [新增] 如果不是滚动触发的静默翻译，就弹出完成提示
+
   if (!isSilent) {
     showToast('✅ 网页翻译完成！');
   }
 
-  setTimeout(() => { 
-    if (abortCurrentTranslation) return; 
-    isTranslating = false; 
-    isPageTranslated = true; 
-    
-    fab.classList.remove('is-complete'); 
-    fab.innerHTML = iconRestore; 
-    fab.style.background = 'linear-gradient(135deg, #64748b, #475569)'; 
-  }, 1200); 
+  successTimer = setTimeout(() => {
+    if (abortCurrentTranslation) return;
+
+    isTranslating = false;
+    isPageTranslated = true;
+
+    fab.classList.remove('is-complete');
+    fab.innerHTML = iconRestore;
+    fab.style.background = 'linear-gradient(135deg, #64748b, #475569)';
+
+    successTimer = null;
+  }, 1200);
 }
 
 function resetFab() {
+  if (successTimer) {
+    clearTimeout(successTimer);
+    successTimer = null;
+  }
+
   isTranslating = false;
-  isPageTranslated = false; 
+  isPageTranslated = false;
   fab.classList.remove('is-complete');
-  fab.style.background = ''; 
+  fab.style.background = '';
   fab.innerHTML = iconTranslate;
 }
 
@@ -183,26 +242,36 @@ function restorePage() {
 }
 
 function getSemanticLineGroups() {
-  const inlineTags = new Set(['A', 'SPAN', 'STRONG', 'B', 'I', 'EM', 'FONT', 'CODE', 'LABEL', 'KBD', 'Q']);
-  const ignoreTags = new Set(['SCRIPT', 'STYLE', 'FOOTER', 'HEADER', 'INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'SVG', 'NOSCRIPT', 'IMG']);
+  const inlineTags = new Set(['A', 'SPAN', 'STRONG', 'B', 'I', 'EM', 'FONT', 'LABEL', 'Q']);
+  const ignoreTags = new Set([
+    'SCRIPT', 'STYLE', 'FOOTER', 'HEADER', 'INPUT', 'TEXTAREA', 'SELECT', 'OPTION',
+    'SVG', 'NOSCRIPT', 'IMG', 'PRE', 'CODE', 'KBD', 'SAMP'
+  ]);
   const blockTags = new Set(['P', 'DIV', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'BLOCKQUOTE', 'SECTION', 'ARTICLE', 'TD', 'TR', 'TH', 'DD', 'DT', 'FIGURE', 'UL', 'OL', 'NAV', 'ASIDE', 'BUTTON']);
 
   const groups = [];
   let currentGroup = [];
   const viewportCenterY = window.scrollY + (window.innerHeight / 2);
 
-  function isElementVisible(el) {
-    if (!el || el.nodeType !== Node.ELEMENT_NODE) return true;
-    const style = window.getComputedStyle(el);
-    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-    const rect = el.getBoundingClientRect();
-    return !(rect.width <= 2 || rect.height <= 2);
-  }
+function isElementVisible(el) {
+  if (!el || el.nodeType !== Node.ELEMENT_NODE) return true;
+  const style = window.getComputedStyle(el);
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 2 || rect.height <= 2) return false;
+
+  // 只处理视口上下各扩展 800px 范围内的元素
+  const buffer = 800;
+  if (rect.bottom < -buffer || rect.top > window.innerHeight + buffer) return false;
+
+  return true;
+}
 
   function flush() {
     if (currentGroup.length > 0) {
       const text = currentGroup.map(n => n.textContent).join(' ').replace(/\s+/g, ' ').trim();
-      if (text.length >= 2 && /[a-zA-Z]{2,}/.test(text)) {
+      if (text.length >= 2 && shouldTranslateText(text)) {
         const lastNode = currentGroup[currentGroup.length - 1];
         if (!(lastNode.nextSibling?.classList?.contains('ds-trans-result'))) {
           const firstNode = currentGroup[0];
@@ -221,8 +290,20 @@ function getSemanticLineGroups() {
     if (node.nodeType === Node.TEXT_NODE) { if (node.nodeValue.trim().length > 0) currentGroup.push(node); }
     else if (node.nodeType === Node.ELEMENT_NODE) {
       const tag = node.tagName.toUpperCase();
-      if (ignoreTags.has(tag) || node.classList.contains('ds-trans-result')) return;
-      if (node.closest('.ds-fab-container') || node.closest('#ds-translate-modal') || node.closest('#ds-settings-modal') || node.closest('#ds-hover-tooltip')) return;
+    if (ignoreTags.has(tag) || node.classList.contains('ds-trans-result')) return;
+
+    if (
+      node.closest('.ds-fab-container') ||
+      node.closest('#ds-translate-modal') ||
+      node.closest('#ds-settings-modal') ||
+      node.closest('#ds-hover-tooltip') ||
+      node.closest('pre') ||
+      node.closest('code') ||
+      node.closest('.highlight') ||
+      node.closest('.snippet-clipboard-content') ||
+      node.closest('.react-code-text') ||
+      node.closest('[data-testid*="code"]')
+    ) return;
       if (!isElementVisible(node)) return;
       if (tag === 'BR') { flush(); }
       else if (blockTags.has(tag)) { flush(); Array.from(node.childNodes).forEach(child => walk(child)); flush(); }
@@ -235,8 +316,9 @@ function getSemanticLineGroups() {
   return groups;
 }
 
-async function translateWholePage(isSilent = false) {
+async function translateWholePage(isSilent = false, forceRetranslate = false) {
   if (isTranslating) return;
+  if (isPageTranslated && !forceRetranslate) return;
   const groups = getSemanticLineGroups();
   if (groups.length === 0) { if (!isSilent) showSuccessFab(true, isSilent); return; }
   
@@ -263,10 +345,10 @@ async function translateWholePage(isSilent = false) {
     showToast(`[${modeName}模式] 正在翻译 ${uncachedGroups.length} 处内容...`);
   }
   
-  const batchSize = 6;
+  const batchSize = 12;
   const batches = [];
   for (let i = 0; i < uncachedGroups.length; i += batchSize) batches.push(uncachedGroups.slice(i, i + batchSize));
-  const maxConcurrent = 3;
+  const maxConcurrent = 4;
   let active = 0, currentIndex = 0, completed = 0;
   
   const next = () => {
@@ -495,19 +577,19 @@ fab.addEventListener('click', (e) => {
 
 // ================= 自动开关与监听逻辑 =================
 const autoSwitch = toggleWrapper.querySelector('#ds-auto-switch');
-chrome.storage.local.get(['autoDomains'], (result) => {
-  let domains = result.autoDomains || [];
+chrome.storage.local.get(['autoTranslateDomains'], (result) => {
+  let domains = result.autoTranslateDomains || [];
   if (domains.includes(currentDomain)) {
     autoSwitch.checked = true;
     autoTranslateEnabled = true;
-    setTimeout(() => { translateWholePage(false); }, 1500);
+    requestAnimationFrame(() => translateWholePage(false));
     startMutationObserver();
   }
 });
 
 autoSwitch.addEventListener('change', (e) => {
-  chrome.storage.local.get(['autoDomains'], (result) => {
-    let domains = result.autoDomains || [];
+  chrome.storage.local.get(['autoTranslateDomains'], (result) => {
+    let domains = result.autoTranslateDomains || [];
     if (e.target.checked) {
       if (!domains.includes(currentDomain)) domains.push(currentDomain);
       autoTranslateEnabled = true;
@@ -520,7 +602,7 @@ autoSwitch.addEventListener('change', (e) => {
       if (observer) observer.disconnect();
       showToast('❌ 已关闭当前网页自动翻译'); 
     }
-    chrome.storage.local.set({ autoDomains: domains });
+    chrome.storage.local.set({ autoTranslateDomains: domains });
   });
 });
 
@@ -528,24 +610,48 @@ let observer;
 let typingTimeout;
 function startMutationObserver() {
   if (observer) observer.disconnect();
+
   observer = new MutationObserver((mutations) => {
-    if (isTranslating || isManualRestored) return; 
+    if (isTranslating || isManualRestored) return;
 
     const isInternal = mutations.some(m => {
-      const added = Array.from(m.addedNodes).some(n => n.nodeType === 1 && (n.classList?.contains('ds-trans-result') || n.id?.startsWith('ds-')));
-      const removed = Array.from(m.removedNodes).some(n => n.nodeType === 1 && (n.classList?.contains('ds-trans-result') || n.id?.startsWith('ds-')));
+      const added = Array.from(m.addedNodes).some(
+        n => n.nodeType === 1 && (n.classList?.contains('ds-trans-result') || n.id?.startsWith('ds-'))
+      );
+      const removed = Array.from(m.removedNodes).some(
+        n => n.nodeType === 1 && (n.classList?.contains('ds-trans-result') || n.id?.startsWith('ds-'))
+      );
       return added || removed;
     });
-    
+
     if (isInternal) return;
+
+    const hasMeaningfulNewNodes = mutations.some(m =>
+      Array.from(m.addedNodes).some(n => {
+        if (n.nodeType === Node.TEXT_NODE) {
+          return n.nodeValue && n.nodeValue.trim().length >= 2;
+        }
+        if (n.nodeType === Node.ELEMENT_NODE) {
+          const el = n;
+          if (el.classList?.contains('ds-trans-result')) return false;
+          if (el.id?.startsWith('ds-')) return false;
+          return !!el.innerText?.trim();
+        }
+        return false;
+      })
+    );
+
+    if (!hasMeaningfulNewNodes) return;
 
     clearTimeout(typingTimeout);
     typingTimeout = setTimeout(() => {
       if (autoTranslateEnabled && !isTranslating && !document.hidden && !isManualRestored) {
+        isPageTranslated = false;
         translateWholePage(true);
       }
-    }, 5000); 
+    }, 1200);
   });
+
   observer.observe(document.body, { childList: true, subtree: true });
 }
 
@@ -573,7 +679,7 @@ document.addEventListener('mouseover', async (e) => {
   const target = e.target;
   if (['SCRIPT', 'STYLE', 'BODY', 'HTML', 'IMG', 'SVG', 'INPUT', 'TEXTAREA'].includes(target.tagName)) return;
   const text = target.innerText?.trim();
-  if (!text || text.length < 2 || !/[a-zA-Z]/.test(text) || hoverTarget === target) return;
+  if (!text || hoverTarget === target || !shouldTranslateText(text)) return;
   
   hoverTarget = target;
   hoverTooltip.style.display = 'block';
@@ -644,4 +750,3 @@ settingsBtn.addEventListener('click', () => {
   };
   document.getElementById('ds-settings-close').onclick = () => overlay.remove();
 });
-
