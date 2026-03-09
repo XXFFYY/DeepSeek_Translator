@@ -734,7 +734,89 @@ if (!hoverTooltip.id) {
 }
 
 let hoverTarget = null;
+let lastMouseX = null;
+let lastMouseY = null;
+let altPressed = false;
+let altProbeTimer = null;
+
+function hideHoverTooltip() {
+  hoverTarget = null;
+  hoverTooltip.style.opacity = '0';
+  setTimeout(() => { if (!hoverTarget) hoverTooltip.style.display = 'none'; }, 200);
+}
+
+function triggerHoverTranslate(target) {
+  if (!target || target.nodeType !== Node.ELEMENT_NODE) return;
+  if (['SCRIPT', 'STYLE', 'BODY', 'HTML', 'IMG', 'SVG', 'INPUT', 'TEXTAREA'].includes(target.tagName)) return;
+
+  const text = target.innerText?.trim();
+  if (!text || hoverTarget === target || !shouldTranslateText(text)) return;
+
+  hoverTarget = target;
+  hoverTooltip.style.display = 'block';
+  hoverTooltip.innerText = "✨ 正在解析...";
+  hoverTooltip.style.color = '#94a3b8';
+  setTimeout(() => { if (hoverTarget === target) hoverTooltip.style.opacity = '1'; }, 10);
+
+  const cached = translationCache[getCacheKey(text)];
+  if (cached) {
+    updateStats(text.length, true);
+    hoverTooltip.innerText = cached;
+    hoverTooltip.style.color = '#10b981';
+    return;
+  }
+
+  chrome.runtime.sendMessage({ action: "translate", type: "single", payload: text, mode: currentMode }, (res) => {
+    if (res?.success && hoverTarget === target) {
+      saveCache(text, res.text);
+      updateStats(text.length, false);
+      hoverTooltip.innerText = res.text;
+      hoverTooltip.style.color = '#10b981';
+    }
+  });
+}
+
+function getCurrentPointerElement() {
+  if (lastMouseX !== null && lastMouseY !== null) {
+    const el = document.elementFromPoint(lastMouseX, lastMouseY);
+    if (el) return el;
+  }
+  const hovered = document.querySelectorAll(':hover');
+  return hovered.length ? hovered[hovered.length - 1] : null;
+}
+
+function triggerCurrentPointerTranslate() {
+  triggerHoverTranslate(getCurrentPointerElement());
+}
+
+function scheduleAltProbe() {
+  if (altProbeTimer) clearTimeout(altProbeTimer);
+  altProbeTimer = setTimeout(() => {
+    if (altPressed) triggerCurrentPointerTranslate();
+  }, 80);
+}
+
+function isAltKeyEvent(e) {
+  return (
+    e.key === 'Alt' ||
+    e.key === 'AltGraph' ||
+    e.code === 'AltLeft' ||
+    e.code === 'AltRight' ||
+    (typeof e.getModifierState === 'function' && e.getModifierState('Alt'))
+  );
+}
+
 document.addEventListener('mousemove', (e) => {
+  lastMouseX = e.clientX;
+  lastMouseY = e.clientY;
+
+  if (e.altKey) {
+    altPressed = true;
+    triggerHoverTranslate(e.target);
+  } else {
+    altPressed = false;
+  }
+
   if (hoverTooltip.style.display === 'block') {
     const rect = hoverTooltip.getBoundingClientRect();
     let left = e.clientX + 15, top = e.clientY + 15;
@@ -746,36 +828,34 @@ document.addEventListener('mousemove', (e) => {
 
 document.addEventListener('mouseover', async (e) => {
   if (!e.altKey) return;
-  const target = e.target;
-  if (['SCRIPT', 'STYLE', 'BODY', 'HTML', 'IMG', 'SVG', 'INPUT', 'TEXTAREA'].includes(target.tagName)) return;
-  const text = target.innerText?.trim();
-  if (!text || hoverTarget === target || !shouldTranslateText(text)) return;
-  
-  hoverTarget = target;
-  hoverTooltip.style.display = 'block';
-  hoverTooltip.innerText = "✨ 正在解析...";
-  hoverTooltip.style.color = '#94a3b8';
-  setTimeout(() => { if(hoverTarget === target) hoverTooltip.style.opacity = '1'; }, 10);
-  
-  const cached = translationCache[getCacheKey(text)];
-  if (cached) {
-    updateStats(text.length, true);
-    hoverTooltip.innerText = cached; hoverTooltip.style.color = '#10b981'; return;
-  }
-  chrome.runtime.sendMessage({ action: "translate", type: "single", payload: text, mode: currentMode }, (res) => {
-    if (res?.success && hoverTarget === target) {
-      saveCache(text, res.text); updateStats(text.length, false);
-      hoverTooltip.innerText = res.text; hoverTooltip.style.color = '#10b981';
-    }
-  });
+  triggerHoverTranslate(e.target);
 });
 
 document.addEventListener('mouseout', (e) => {
   if (hoverTarget && e.target === hoverTarget) {
-    hoverTarget = null; hoverTooltip.style.opacity = '0';
-    setTimeout(() => { if (!hoverTarget) hoverTooltip.style.display = 'none'; }, 200);
+    hideHoverTooltip();
   }
 });
+
+function onGlobalKeyDown(e) {
+  if (!isAltKeyEvent(e)) return;
+  altPressed = true;
+  triggerCurrentPointerTranslate();
+  scheduleAltProbe();
+}
+
+function onGlobalKeyUp(e) {
+  if (!isAltKeyEvent(e)) return;
+  altPressed = false;
+  if (altProbeTimer) {
+    clearTimeout(altProbeTimer);
+    altProbeTimer = null;
+  }
+  if (hoverTarget) hideHoverTooltip();
+}
+
+window.addEventListener('keydown', onGlobalKeyDown, true);
+window.addEventListener('keyup', onGlobalKeyUp, true);
 
 // ================= 8. 设置面板逻辑 =================
 settingsBtn.addEventListener('click', () => {
