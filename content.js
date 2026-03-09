@@ -1,4 +1,4 @@
-const currentDomain = window.location.hostname;
+const currentDomain = normalizeDomain(window.location.hostname);
 let isTranslating = false;
 let autoTranslateEnabled = false;
 let isPageTranslated = false; // [新增] 记录页面是否处于已翻译状态
@@ -22,6 +22,18 @@ let currentMode = 'normal';
 
 const gameDomains = ['nexusmods.com', 'steampowered.com', 'epicgames.com', 'ign.com', 'fandom.com', 'curseforge.com'];
 const academicDomains = ['github.com', 'arxiv.org', 'stackoverflow.com', 'nature.com', 'ieee.org', 'sciencedirect.com'];
+
+function normalizeDomain(hostname) {
+  return (hostname || '').replace(/^www\./, '');
+}
+
+function isDomainMatched(savedDomains, hostname) {
+  const host = (hostname || '').replace(/^www\./, '');
+  return savedDomains.some(d => {
+    const domain = (d || '').replace(/^www\./, '');
+    return host === domain || host.endsWith('.' + domain);
+  });
+}
 
 function analyzeTextLang(text) {
   const clean = (text || '')
@@ -578,8 +590,8 @@ fab.addEventListener('click', (e) => {
 // ================= 自动开关与监听逻辑 =================
 const autoSwitch = toggleWrapper.querySelector('#ds-auto-switch');
 chrome.storage.local.get(['autoTranslateDomains'], (result) => {
-  let domains = result.autoTranslateDomains || [];
-  if (domains.includes(currentDomain)) {
+  let domains = (result.autoTranslateDomains || []).map(normalizeDomain);
+  if (isDomainMatched(domains, currentDomain)) {
     autoSwitch.checked = true;
     autoTranslateEnabled = true;
     requestAnimationFrame(() => translateWholePage(false));
@@ -589,30 +601,88 @@ chrome.storage.local.get(['autoTranslateDomains'], (result) => {
 
 autoSwitch.addEventListener('change', (e) => {
   chrome.storage.local.get(['autoTranslateDomains'], (result) => {
-    let domains = result.autoTranslateDomains || [];
+    let domains = (result.autoTranslateDomains || []).map(normalizeDomain);
+
     if (e.target.checked) {
       if (!domains.includes(currentDomain)) domains.push(currentDomain);
       autoTranslateEnabled = true;
       startMutationObserver();
-      showToast('✅ 已开启当前网页自动翻译'); 
+      showToast('✅ 已开启当前网页自动翻译');
       translateWholePage();
     } else {
       domains = domains.filter(d => d !== currentDomain);
       autoTranslateEnabled = false;
       if (observer) observer.disconnect();
-      showToast('❌ 已关闭当前网页自动翻译'); 
+      showToast('❌ 已关闭当前网页自动翻译');
     }
+
     chrome.storage.local.set({ autoTranslateDomains: domains });
   });
 });
 
 let observer;
 let typingTimeout;
+let lastKnownUrl = window.location.href;
+let routeChangeTimer = null;
+
+function scheduleRouteRetranslate() {
+  if (!autoTranslateEnabled) return;
+  clearTimeout(routeChangeTimer);
+  routeChangeTimer = setTimeout(() => {
+    if (!autoTranslateEnabled || isTranslating || document.hidden) return;
+    abortCurrentTranslation = false;
+    isManualRestored = false;
+    isPageTranslated = false;
+    translateWholePage(true, true);
+  }, 900);
+}
+
+function handleRouteChangeIfNeeded() {
+  const nextUrl = window.location.href;
+  if (nextUrl === lastKnownUrl) return;
+  lastKnownUrl = nextUrl;
+
+  // Remove stale injected translations after SPA navigation.
+  const translatedNodes = document.querySelectorAll('.ds-translated');
+  translatedNodes.forEach(node => node.remove());
+
+  abortCurrentTranslation = true;
+  isTranslating = false;
+  isPageTranslated = false;
+  isManualRestored = false;
+  resetFab();
+  abortCurrentTranslation = false;
+
+  scheduleRouteRetranslate();
+}
+
+function installNavigationWatcher() {
+  const notifyRouteChange = () => setTimeout(handleRouteChangeIfNeeded, 0);
+
+  ['pushState', 'replaceState'].forEach(method => {
+    const original = history[method];
+    if (typeof original !== 'function' || original.__dsWrapped) return;
+    const wrapped = function(...args) {
+      const result = original.apply(this, args);
+      notifyRouteChange();
+      return result;
+    };
+    wrapped.__dsWrapped = true;
+    history[method] = wrapped;
+  });
+
+  window.addEventListener('popstate', notifyRouteChange);
+  window.addEventListener('hashchange', notifyRouteChange);
+}
+
+installNavigationWatcher();
+
 function startMutationObserver() {
   if (observer) observer.disconnect();
 
   observer = new MutationObserver((mutations) => {
     if (isTranslating || isManualRestored) return;
+    handleRouteChangeIfNeeded();
 
     const isInternal = mutations.some(m => {
       const added = Array.from(m.addedNodes).some(
@@ -652,7 +722,7 @@ function startMutationObserver() {
     }, 1200);
   });
 
-  observer.observe(document.body, { childList: true, subtree: true });
+  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 }
 
 // ================= 7. 悬停翻译 (Alt + Hover) =================

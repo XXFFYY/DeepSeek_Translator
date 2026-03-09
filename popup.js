@@ -2,12 +2,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     const apiKeyInput = document.getElementById('apiKey');
     const autoToggle = document.getElementById('autoToggle');
     const siteDomainSpan = document.getElementById('siteDomain');
+
+    function normalizeDomain(hostname) {
+      return (hostname || '').replace(/^www\./, '');
+    }
   
     // 获取当前活跃网页的域名
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     let domain = "未知网站";
     if (tab && tab.url && tab.url.startsWith('http')) {
-      domain = new URL(tab.url).hostname;
+      domain = normalizeDomain(new URL(tab.url).hostname);
       siteDomainSpan.textContent = domain;
     } else {
       siteDomainSpan.textContent = "无法在该页使用";
